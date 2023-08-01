@@ -1,0 +1,936 @@
+#alias radiogenomics 05_07_23
+
+#set seed
+if(T){
+  set.seed(1)
+}
+
+#import libraries
+if(T){
+  library(reshape2)
+  library(ggplot2)
+  library(ggpubr)
+  library(org.Hs.eg.db)
+  library(MASS)
+  library(scales)
+}
+
+#utility functions
+if(T){
+  
+  clean_dcm_str <- function(x){
+    x <- gsub(".* \\'", "",  x)
+    x <- gsub(".* \\\"", "",  x)
+    x <- gsub("\\'.*", "",  x)
+    x <- gsub("\\\".*", "",  x)
+    x <- tolower(x)
+    x <- gsub(" ", "_", x)
+    return(x)
+  }
+  
+  fac2 <- function(x, levels=NULL){
+    if(!is.null(levels)){
+      factor(x, exclude=NULL, levels=levels)
+    }else{
+      factor(x, exclude=NULL)
+    }
+  }
+  
+  format_p <- function(x,table=F){
+    x_out <- x
+    x_out[x<0.001]<- "<.001"
+    x_out[0.001<=x&x<0.01]<- round(x[0.001<=x&x<0.01], 3)
+    x_out[0.01<=x&x<0.05]<- round(x[0.01<=x&x<0.05], 2)
+    x_out[0.001<=x&x<0.05] <- paste0("=", substr(x_out[0.001<=x&x<0.05], 2, nchar(x_out[0.001<=x&x<0.05])))
+    x_out[x>=0.05] <- ">.05"
+    if(table){
+      x_out <- gsub("<", "< 0", x_out)
+      x_out <- gsub("=", "0", x_out)
+    }
+    
+    return(x_out)
+  }
+  
+  mse_func <- function(a,b){
+    mean((a-b)^2)
+  }
+  cs_func <- function(a,b){
+    sum(a*b)/sqrt(sum(a^2)*sum(b^2))
+  }
+  
+}
+
+#preselect genes
+if(T){
+  preselected_gene_vec <- c(
+    SLC2A1="ENSG00000117394",
+    DCK="ENSG00000156136",
+    PAPSS2="ENSG00000198682",
+    SIRT2="ENSG00000068903",
+    TRIM44="ENSG00000166326",
+    SPARC="ENSG00000113140",
+    SPP1="ENSG00000118785",
+    EGFR="ENSG00000146648",
+    MTMR9="ENSG00000104643",
+    NEIL2="ENSG00000154328",
+    WT1="ENSG00000184937"
+  )
+  
+  preselected_gene_df <- data.frame(
+    gene_name=names(preselected_gene_vec),
+    ensembl_id=preselected_gene_vec
+  )
+  
+}
+
+#pre-select model features
+if(T){
+  dcm_meta_vars <- c("acq_scanner_manufacturer", "acq_scanner_model", "acq_voxel_dim",
+                     "acq_slice_thickness","acq_kvp","acq_kernel","acq_xr_current","acq_exposure_time","acq_exposure"
+  )
+  clin_features <- c("age", "clin_t_stage", "original_shape_VoxelVolume")
+  
+}
+
+#alias data preparation
+if(T){
+  
+  #Clean clinical data
+  if(T){
+    
+    #read in clinical data
+    metadata_dir <- "C:/Users/ro20/Documents/Datasets/ALIAS/Metadata"
+    metadata_file <- file.path(metadata_dir,
+                               "query_standard_cohort_2023-02-22.tsv.txt")
+    metadata <- read.delim(metadata_file, stringsAsFactors = F)
+    
+    #concatenate duplicates
+    metadata_list <- lapply(sort(unique(metadata$occams_id)), function(id_i){
+      
+      metadata_i <- metadata[which(metadata$occams_id==id_i),]
+      return(metadata_i[nrow(metadata_i),])
+    })
+    metadata <- do.call(rbind.data.frame, metadata_list)
+    
+    #identifiers
+    patient_id <- substr(metadata$occams_id, 8, nchar(metadata$occams_id))
+    patient_id <- gsub("/", "", patient_id)
+    sha_id <- metadata$sha_id
+    centre <- substr(patient_id, 1,2)
+    centre <- paste0("institution_", LETTERS[1:5])[factor(centre)]
+    diagnosis_date <- as.Date(metadata$RD_DateOfOGCDiagnosis, format = "%d/%m/%Y")
+    
+    #overall survival
+    os_time <- as.matrix(metadata[,c("deceased_survival_days", "last_known_survival_days")])
+    os_time <- rowSums(os_time, na.rm = TRUE)
+    os_event <- !is.na(metadata$deceased_survival_days)
+    os_censor_date <- diagnosis_date+os_time
+    
+    #demographics
+    age <- metadata$DI_ageAtDiagnosis
+    female <- metadata$DI_PatientGender=="female"
+    smoking <- metadata$EX_IsSmoker
+    smoking[smoking==""]<- "unknown"
+    etoh <- metadata$EX_FormerlyOrCurrentlyHeavyDrinker
+    etoh[etoh==""] <- "unknown"
+    bmi <- metadata$EX_CurrentBMI
+    bmi[bmi==-1]<- NA
+    underweight <- (bmi < 18.5)|is.na(bmi)
+    
+    #clinical T stage
+    clin_t_stage <- metadata$PS_TStage_PrimaryTumour_FinalPretreatmentStaging
+    clin_t_stage[clin_t_stage %in% c("tumour_invades_submucosa")] <- 1
+    clin_t_stage[clin_t_stage %in% c("tumour_invades_muscularis_propria",
+                                     "T2")] <- 2
+    clin_t_stage[clin_t_stage %in% c("tumour_invades_adventitia",
+                                     "T3")] <- 3
+    clin_t_stage[clin_t_stage %in% c("tumour_invades_pleura_pericardium_or_diaphragm")] <- 4
+    clin_t_stage[clin_t_stage %in% c("tumour_invades_adjacent_structures")] <- 4
+    clin_t_stage <- as.numeric(clin_t_stage)
+    clin_t_stage_b <- clin_t_stage >=3
+    
+    #clinical N stage
+    clin_n_stage <- metadata$PS_NStage_PrimaryTumour_FinalPretreatmentStaging_TNM7
+    clin_n_stage <- as.numeric(substr(clin_n_stage, 2, 2))
+    clin_n_stage_b <- clin_n_stage > 0
+    
+    #clinical M stage
+    clin_m_stage <- metadata$PS_MStage_PrimaryTumour_FinalPretreatmentStaging
+    clin_m_stage <- suppressWarnings(as.numeric(substr(clin_m_stage, 2,2)))
+
+    #management
+    metadata$TP_PalliativeAntiCancerTreatmentModality[metadata$TP_PalliativeAntiCancerTreatmentModality=="unknown"] <- ""
+    treatment_modality <- paste0(
+      metadata$TP_CurativeTreatmentModality,
+      metadata$TP_PalliativeAntiCancerTreatmentModality
+    )
+    
+    # surgery
+    underwent_surgery <- metadata$ST_MainSurgery=="yes"
+    
+    #chemotherapy
+    chemotherapy_protocol <- metadata$TR_ChemotherapyTreatmentProtocol
+    chemotherapy_protocol[chemotherapy_protocol%in%c("ECX",
+                                                     "ECX (Neo Aegis trial)",
+                                                     "ECX 12HR",
+                                                     "ECX 1HR",
+                                                     "ECX:12HR",
+                                                     "STO3/ECX only"
+    )] <- "epirubicin, cisplatin, capecitabine"
+    chemotherapy_protocol[chemotherapy_protocol%in%c("ECX +- Bevacuzimab",
+                                                     "ECX (Neo Aegis trial)",
+                                                     "ECX +-avastin",
+                                                     "ECX + avastin",
+                                                     "ECX+Bevacizumab (STO3)",
+                                                     "ST03",
+                                                     "STO3(ECX or ECX&Bevacizumab)",
+                                                     "STO3/ECX only",
+                                                     "ST03 trial",
+                                                     "ST03")] <- "epirubicin, cisplatin, capecitabine +/- bevacizumab"
+    chemotherapy_protocol[chemotherapy_protocol%in%c("CROSS",
+                                                     "carboplatin +paclitaxel"
+    )] <- "carboplatin, paclitaxel"
+    chemotherapy_protocol[chemotherapy_protocol=="EOX"] <- "epirubicin, oxaliplatin, capecitabine"
+    chemotherapy_protocol[chemotherapy_protocol=="1xECX, 5x EOX"] <- "epirubicin, cisplatin, oxaliplatin, capecitabine"
+    chemotherapy_protocol[chemotherapy_protocol%in%c("ECarboX",
+                                                     " ECarboX",
+                                                     "E Carbo X")] <- "epirubicin, carboplatin, capecitabine"
+    chemotherapy_protocol[chemotherapy_protocol%in%c("CX")] <- "cisplatin, capecitabine"
+    chemotherapy_protocol[chemotherapy_protocol%in%c("ECF")] <- "epirubicin, cisplatin, 5-fluorouracil"
+    chemotherapy_protocol[chemotherapy_protocol%in%c("ECX after cycle 1 switched to ECF",
+                                                     "ECX (1x) ECF (2x)")] <- "epirubicin, cisplatin, capecitabine, 5-fluorouracil"
+    chemotherapy_protocol[chemotherapy_protocol%in%c("nil",
+                                                     "Nil",
+                                                     "Nil (no option to exclude)",
+                                                     "nill"
+    )] <- "none"
+    chemotherapy_protocol[chemotherapy_protocol%in%c("CarboX",
+                                                     "Carboplatin "
+    )] <- "carboplatin"
+    chemotherapy_protocol[chemotherapy_protocol %in% c("CIS/5-FU",
+                                                       "2Cisplatin/5FU",
+                                                       "CF",
+                                                       "Cis/5-FU",
+                                                       "Cisplatin + 5-FU",
+                                                       "Cisplatin/5'FU",
+                                                       "Cisplatin/5-FU",
+                                                       "Cisplatin/5FU",
+                                                       "C/5'FU ",
+                                                       "CIS/Capecitabine ",
+                                                       "Cisplatin/5 FU"
+    )] <- "cisplatin, 5-fluorouracil"
+    chemotherapy_protocol[chemotherapy_protocol %in% c("LEO",
+                                                       "LEO (XC&Lapatinib)",
+                                                       "Oxaliplatin, Capecitabine, Lapatinib(LEO)"
+                                                       
+    )] <- "lapatinib, capecitabine, oxaliplatin"
+    chemotherapy_protocol[chemotherapy_protocol %in% c("ECarboX")] <- "epirubicin, carboplatin, capecitabine"
+    chemotherapy_protocol[chemotherapy_protocol %in% c("Carboplatin")] <- "carboplatin"
+    chemotherapy_protocol[chemotherapy_protocol %in% c("Cisplatin/Capecitabine")] <- "cisplatin, capecitabine"
+    
+    chemotherapy_protocol[chemotherapy_protocol %in% c("O/5'FU")] <- "oxaliplatin, 5-fluorouracil"
+    chemotherapy_protocol[chemotherapy_protocol %in% c("Initially palliative - good response considered for curative surgery")] <- "other"
+    chemotherapy_protocol[chemotherapy_protocol %in% c("CX & Trastuzumab")] <- "cisplatin, capecitabine, trastuzumab"
+    chemotherapy_protocol[chemotherapy_protocol %in% c("")] <- "unknown"
+    chemotherapy_protocol2 <- chemotherapy_protocol
+    chemotherapy_protocol2[!chemotherapy_protocol2 %in% c("epirubicin, cisplatin, capecitabine",
+                                                          "cisplatin, 5-fluorouracil",
+                                                          "epirubicin, oxaliplatin, capecitabine",
+                                                          "none",
+                                                          "epirubicin, cisplatin, capecitabine +/- bevacizumab",
+                                                          "unknown"
+    )] <- "other"
+    chemotherapy_protocol <- chemotherapy_protocol2
+    
+    
+    #pathological T stage
+    path_t_stage <- metadata$RP_TStage_PrimaryTumour
+    path_t_stage_missing <- path_t_stage %in% c("not_recorded",
+                                                "")
+    path_t_stage[path_t_stage_missing] <- NA  # absent imputed as t4
+    path_t_stage[path_t_stage %in% c("no_evidence_of_primary_tumour",
+                                     "T0")] <- 0
+    path_t_stage[path_t_stage %in% c("tumour_invades_submucosa",
+                                     "tumour_invades_lamina_propria_or_muscularis_mucosae",
+                                     "tumour_invades_lamina_propria_muscularis_mucosae_or_submucosa",
+                                     "T1",
+                                     "T1a",
+                                     "T1b")] <- 1
+    path_t_stage[path_t_stage %in% c("tumour_invades_muscularis_propria",
+                                     "T2")] <- 2
+    path_t_stage[path_t_stage %in% c("tumour_invades_adventitia",
+                                     "T3")] <- 3
+    path_t_stage[path_t_stage %in% c("tumour_invades_pleura_pericardium_or_diaphragm",
+                                     "tumour_invades_adjacent_structures",
+                                     "tumour_invades_other_adjacent_structures_such_as_aorta_vertebral_body_or_trachea",
+                                     "T4a")] <- 4
+    path_t_stage <- as.numeric(path_t_stage)
+    path_t_stage_b <- path_t_stage >=3
+    
+    #path N stage
+    path_n_stage <- paste0(metadata$RP_Nstage_RP_TNM6,
+                           metadata$RP_Nstage_RP_TNM7)
+    path_n_stage_missing <- path_n_stage==""
+    path_n_stage[path_n_stage_missing] <- NA
+    path_n_stage <- as.numeric(substr(path_n_stage, 2, 2))
+    path_n_stage_b <- path_n_stage > 0
+    
+    #lymphvascular invasion
+    path_invasion <- metadata$RP_LymphoVascularInvasion
+    path_invasion_missing <- path_invasion==""
+    path_invasion[path_invasion_missing] <- NA
+    path_invasion <- (path_invasion=="yes")*1
+    
+    #pathological response
+    path_response <- (path_t_stage < clin_t_stage)*1
+    path_response_missing <- is.na(path_response)
+    
+    #lymphvascular invasion
+    path_invasion <- metadata$RP_LymphoVascularInvasion
+    path_invasion_missing <- path_invasion==""
+    path_invasion[path_invasion_missing] <- NA
+    path_invasion <- (path_invasion=="yes")*1
+    
+    #pathological response
+    path_response <- (path_t_stage < clin_t_stage)*1
+    path_response_missing <- is.na(path_response)
+    
+    #mandard
+    mandard_response <- as.numeric(substr(metadata$RP_MandardScoreForResponse, 4,4))
+    
+    clinical_data <- data.frame(
+      pathology="oesophageal adenocarcinoma",
+      patient_id,
+      sha_id,
+      centre,
+      diagnosis_date,
+      age,
+      female,
+      bmi,
+      underweight,
+      smoking,
+      etoh,
+      underwent_surgery,
+      clin_t_stage,
+      clin_t_stage_b,
+      clin_n_stage,
+      clin_n_stage_b,
+      clin_m_stage,
+      os_time,
+      os_event,
+      treatment_modality,
+      chemotherapy_protocol,
+      mandard_response,
+      path_response,
+      path_t_stage,
+      stringsAsFactors = F
+    )
+    rownames(clinical_data) <- clinical_data$patient_id
+    
+    all_patient_ids <- unique(patient_id)
+    initial_patient_count <- length(all_patient_ids)
+    initial_centre_counts <- table(centre)
+    
+    radioclinical_df <- clinical_data
+    radioclinical_df$nonchemorad_patients <- clinical_data$treatment_modality %in% c("surgery only", "palliative oncological treatment")
+    n_nonchemorad_patients <- sum(radioclinical_df$nonchemorad_patients)
+    radioclinical_df <- radioclinical_df[!radioclinical_df$nonchemorad_patients,]
+  }
+  
+  #import ct image acquisition parameters
+  if(T){
+    acq_params_file <- 'C:/Users/ro20/Documents/PycharmProjects/ALIAS 11_10_21/acq_params/alias.csv'
+    acq_params_df <- read.csv(acq_params_file)[,-1]
+    acq_params_df <- acq_params_df[,!colnames(acq_params_df)=="slice_thickness"]
+    acq_params_df$acq_study_date <- paste0(
+      substr(acq_params_df$acq_study_date,
+             1,4),'-',
+      substr(acq_params_df$acq_study_date,
+             5,6),'-',
+      substr(acq_params_df$acq_study_date,
+             7,8)
+    )
+    acq_params_df$acq_study_date <- as.Date(acq_params_df$acq_study_date, format="%Y-%m-%d")
+    truncation_df <- read.csv('C:/Users/ro20/Documents/PycharmProjects/ALIAS 11_10_21/tables/alias_truncation.csv')[,-1]
+    acq_params_df <- merge.data.frame(acq_params_df, truncation_df, all.x = T, all.y = T)
+    acq_params_df$truncation[is.na(acq_params_df$truncation)] <- F
+    acq_params_df$dataset <- "ALIAS"
+    acq_params_df <- acq_params_df[acq_params_df$scan=="SCAN2",]
+    acq_params_df <- acq_params_df[acq_params_df$patient_id %in% radioclinical_df$patient_id,]
+    patients_without_scan2 <- setdiff(radioclinical_df$patient_id, acq_params_df$patient_id)
+    n_patients_without_scan2 <- length(patients_without_scan2)
+    radioclinical_df <- merge.data.frame(radioclinical_df, acq_params_df, by='patient_id', all.x = F, all.y = T)
+    
+  }
+  
+  #import radiomic data
+  if(T){
+    
+    radiomic_df <- read.csv("C:/Users/ro20/Documents/Datasets/Radiomic_Features/radiomic_features_alias_SW_06_03_23/ALIAS_os.csv")[,-1]
+    radiomic_df <- radiomic_df[radiomic_df$patient_id!="NT331",]
+    radiomic_df <- radiomic_df[radiomic_df$scan=="SCAN2",]
+    radiomic_df <- radiomic_df[radiomic_df$patient_id %in% radioclinical_df$patient_id,]
+    radioclinical_df <- merge.data.frame(radioclinical_df, radiomic_df)
+    
+    
+    radioclinical_df$patients_with_corrupt_scan <- radioclinical_df$patient_id %in% setdiff(acq_params_df$patient_id,
+                                                                                            radioclinical_df$patient_id)
+    n_patients_with_corrupt_scan <- length(unique(radioclinical_df$patient_id[
+      radioclinical_df$patients_with_corrupt_scan
+    ]))
+    radioclinical_df <- radioclinical_df[!radioclinical_df$patients_with_corrupt_scan,]
+    radioclinical_df$patients_without_visible_tumour <-  radioclinical_df$region_identified=="False"
+    n_patients_without_visible_tumour <- sum(radioclinical_df$patients_without_visible_tumour)
+    radioclinical_df <- radioclinical_df[!radioclinical_df$patients_without_visible_tumour,]
+    radioclinical_df$patients_with_truncation <- radioclinical_df$truncation=="True"
+    n_patients_with_truncation <- sum(radioclinical_df$patients_with_truncation)
+    radioclinical_df <- radioclinical_df[!radioclinical_df$patients_with_truncation,]
+    
+  }
+  
+}
+
+#stability analysis
+if(T){
+  
+  train_centres <- c("institution_A", "institution_B")
+  df_train_stability <- radioclinical_df[radioclinical_df$centre %in% train_centres,]
+  df_train_stability <- df_train_stability[df_train_stability$scan=="SCAN2",]
+  
+  get_exclusions <- function(df_i){
+    exclusion_cols <- grep("patients", colnames(df_i), value=T)
+    exclusion_df <- df_i[,c("patient_id","scan", exclusion_cols)]
+    exclusion_counts <- c()
+    for(exclusion_i in exclusion_cols){
+      excluded_patients <- sum(exclusion_df[,exclusion_i])
+      exclusion_counts <- c(exclusion_counts, excluded_patients)
+      exclusion_df <- exclusion_df[!exclusion_df[,exclusion_i],]
+    }
+    names(exclusion_counts) <- exclusion_cols
+    return(exclusion_counts)
+  }
+  stability_exclusions <- get_exclusions(df_train_stability)
+  
+  df_train_stability <- df_train_stability[rowSums(df_train_stability[, grep("patients", colnames(df_train_stability), value=T)])==0,]
+  
+  all_rad_vars <- grep("^original_", colnames(df_train_stability), value=T)
+  all_rad_vars <- setdiff(all_rad_vars, c("original_firstorder_TotalEnergy", "original_shape_MeshVolume"))
+  stability_df <- lapply(all_rad_vars, function(v_i){
+    
+    df_i <- df_train_stability[,c(v_i, "acq_scanner_manufacturer", "centre")]
+    colnames(df_i)[1]<- "y"
+    df_i$y <- rank(df_i$y)
+    aov_scanner <- aov(y~acq_scanner_manufacturer,
+                       data = df_i
+    )
+    aov_scanner <- summary(aov_scanner)[[1]][1,4:5]
+    aov_scanner <- as.data.frame(aov_scanner)
+    aov_scanner$rad_var <- v_i
+    aov_centre <- aov(y~centre,
+                      data = df_i
+    )
+    aov_centre <- summary(aov_centre)[[1]][1,4:5]
+    aov_centre <- as.data.frame(aov_centre)
+    aov_centre$rad_var <- v_i
+    aov_i <- rbind(aov_scanner,aov_centre )
+    aov_i$variable <- rownames(aov_i)
+    
+    return(aov_i)
+    
+  })
+  stability_df <- do.call(rbind.data.frame, stability_df)
+  rownames(stability_df)<- NULL
+  colnames(stability_df)<- c("F-score", "P-value", "Radiomic Feature", "Variable")
+  stability_df$Variable <- trimws(stability_df$Variable)
+  stability_df<- stability_df[,c(4,3,1,2)]
+  scanner_stability <- stability_df[stability_df$Variable=="acq_scanner_manufacturer",]
+  centre_stability <- stability_df[stability_df$Variable=="centre",]
+  
+  rad_vars <- all_rad_vars[scanner_stability$`P-value`>0.1&
+                             centre_stability$`P-value`>0.1
+  ]
+  stability_df2 <- stability_df[stability_df$`Radiomic Feature` %in% rad_vars,]
+  stability_df2$res <- paste0("F=", round(stability_df2$`F-score`, 2), ", P=", round(stability_df2$`P-value`, 2))
+  stability_df2$Variable[stability_df2$Variable=="acq_scanner_manufacturer"]<- "scanner vendor"
+  stability_df2 <- cbind(stability_df2[stability_df2$Variable=="scanner vendor",c(2,5)],
+                         stability_df2[stability_df2$Variable!="scanner vendor",5])
+  colnames(stability_df2)[-1] <- c("Variability by Scanner Vendor", "Variability by Institution")
+  stability_df2[,1]<- gsub("original_", "", stability_df2[,1])
+  write.csv(stability_df2,
+            "tables/stability_df.csv")
+  
+}
+
+#alias genomic file
+if(T){
+  alias_genomics_dir <- "C:/Users/ro20/Documents/Datasets/ALIAS/Genomics"
+  alias_genomic_file <- file.path(alias_genomics_dir, "selected_tpm_22_05_23.tsv")
+}
+
+#extract rna_seq data
+if(F){
+  
+  rpkm_file <- file.path(alias_genomics_dir, "rpkm_tpm2.tsv")
+  rpkm_lines_all <- suppressWarnings(readLines(rpkm_file))
+  rpkm_lines <- rpkm_lines_all
+  rpkm_lines <- split(rpkm_lines, ceiling(seq_along(rpkm_lines) / 57906))
+  names(rpkm_lines) <- gsub("__.*", "", lapply(rpkm_lines, "[", 1))
+  names(rpkm_lines) <- trimws(names(rpkm_lines))
+  rpkm_lines <- rpkm_lines[-length(rpkm_lines)]
+  rpkm_lines <- lapply(rpkm_lines, function(x_i){
+    x_i <- x_i[substr(x_i, 1, 15) %in% preselected_gene_df$ensembl_id]
+    x_i <- strsplit(x_i, split="\t")
+    x_i <- do.call(rbind, x_i)
+    rownames(x_i)<- x_i[,1]
+    x_i <- t(x_i)[8,,drop=F]
+    class(x_i)<- "numeric"
+    x_i <- as.data.frame(x_i)
+    x_i <- x_i[,match(preselected_gene_df$ensembl_id, colnames(x_i))]
+    return(x_i)
+  })
+  rpkm_lines <- do.call(rbind, rpkm_lines)
+  rpkm_lines$slx_id <- rownames(rpkm_lines)
+  
+  case_id_map_file <- file.path(alias_genomics_dir, "secure_case_spec_rna.txt")
+  case_id_map <- read.csv(case_id_map_file, header = F)
+  colnames(case_id_map) <- c("sha_id", "lesion_id", "slx_id")
+  
+  
+  alias_genomic_df <- merge.data.frame(rpkm_lines, case_id_map)
+  write.csv(alias_genomic_df,  alias_genomic_file)
+}
+
+#integrate data
+if(T){
+  
+  alias_genomic_df <- read.csv(alias_genomic_file,
+                               row.names = 1)
+  alias_genomic_df$patient_id <- radioclinical_df$patient_id[match(alias_genomic_df$sha_id, radioclinical_df$sha_id)]
+  alias_genomic_df <- alias_genomic_df[!is.na(alias_genomic_df$patient_id),]
+  alias_genomic_df$centre <- substr(alias_genomic_df$patient_id, 1, 2)
+  alias_genomic_df$centre <- paste0("institution_", LETTERS[1:5])[factor(alias_genomic_df$centre)]
+  alias_genomic_df <- lapply(unique(alias_genomic_df$sha_id), function(unique_id){
+    alias_genomic_df_i <- alias_genomic_df[alias_genomic_df$sha_id==unique_id,,drop=F]
+    
+    alias_genomic_df_i <-
+      aggregate(alias_genomic_df_i[grep("ENSG", colnames(alias_genomic_df_i))],
+                by=alias_genomic_df_i[c("sha_id", "patient_id", "centre")],
+                FUN=mean
+      )
+    return(alias_genomic_df_i)
+  })
+  alias_genomic_df <- do.call(rbind, alias_genomic_df)
+  
+  colnames(alias_genomic_df)[grep("ENSG", colnames(alias_genomic_df))]<- 
+    preselected_gene_df$gene_name[match(colnames(alias_genomic_df)[grep("ENSG", colnames(alias_genomic_df))],
+                                        preselected_gene_df$ensembl_id)]
+  
+  
+  genomic_sample_sizes <- table(alias_genomic_df$centre)
+  
+  
+  nonzero_proportions <- colMeans(alias_genomic_df[,preselected_gene_df$gene_name]==0)
+  high_nonzero_genes <- which(nonzero_proportions>0.5)
+  alias_genomic_df_plotting <- alias_genomic_df[preselected_gene_df$gene_name]
+  
+  preselected_gene_df <- preselected_gene_df[nonzero_proportions < 0.5,]
+  alias_genomic_df <- alias_genomic_df[,!colnames(alias_genomic_df) %in% high_nonzero_genes]
+  
+  alias_radiogenomic_df <- merge.data.frame(
+    radioclinical_df,
+    alias_genomic_df,
+    all.x = T,
+    all.y = F
+  )
+  alias_radiogenomic_df <- alias_radiogenomic_df[!is.na(alias_radiogenomic_df$acq_scanner_manufacturer),]
+  
+  alias_radiogenomic_df$patients_without_genomics <- is.na(alias_radiogenomic_df[,preselected_gene_df$gene_name[1]])
+  n_patients_without_genomics <- sum(alias_radiogenomic_df$patients_without_genomics)
+  alias_radiogenomic_df <- alias_radiogenomic_df[!alias_radiogenomic_df$patients_without_genomics,]
+  
+  
+  radgen_exclusions <-  get_exclusions(alias_radiogenomic_df)
+  exclusion_cols <- grep("patients", colnames(alias_radiogenomic_df), value=T)
+  exclusion_df <- alias_radiogenomic_df[exclusion_cols]
+  
+  alias_radiogenomic_df <- alias_radiogenomic_df[rowSums(alias_radiogenomic_df[exclusion_cols])==0,]
+  
+  
+  df_traintest <- alias_radiogenomic_df
+  df_train <- df_traintest[df_traintest$centre %in% train_centres,]
+  df_test <- df_traintest[!df_traintest$centre %in% train_centres,]
+  
+}
+
+#power simulation
+if(T){
+  
+  n <- nrow(df_test)
+  sigma_xy <- matrix(c(1,0.5,0.5,1), 2)
+  sim_p <- sapply(1:1000, function(rep_i){
+    xy_i <- mvrnorm(n=n, mu=c(0,0), Sigma=sigma_xy)
+    cor.test(xy_i[,1],
+             xy_i[,2],
+             method="spearman"
+    )$p.value
+  })
+  power_sims <- sapply(1:10, function(m){
+    sim_m <- replicate(n=m, expr=sample(sim_p))
+    sim_m <- apply(sim_m, 1, function(sim_m_i) p.adjust(sim_m_i, method="holm"))
+    mean(sim_m<0.05)
+  })
+
+}
+
+#data characteristics
+if(T){
+  
+  all_data <- alias_radiogenomic_df
+  all_data$partition <- factor(ifelse(all_data$centre %in% train_centres, "Train", "Test"),
+                               levels=c("Train", "Test"))
+  
+  
+  #clinical characteristics
+  all_data$Institution_fac <- fac2(all_data$centre)
+  all_data$Age_fac <- cut(all_data$age, c(45, 60, 75, 90))
+  all_data$Sex_fac <- factor(ifelse(all_data$female, "female", "male"))
+  all_data$BMI_fac <- as.character(cut(all_data$bmi, c(0, 18.5, 25, 30, 45)))
+  all_data$BMI_fac[is.na(all_data$BMI_fac)] <- "unknown"
+  all_data$BMI_fac <- factor(all_data$BMI_fac)
+  all_data$Smoking_fac <- fac2(all_data$smoking)
+  all_data$Chemotherapy_fac <- fac2(all_data$chemotherapy_protocol)
+  all_data$cT_stage_fac <- all_data$clin_t_stage
+  all_data$cT_stage_fac[is.na(all_data$cT_stage_fac)]<- "unknown"
+  all_data$cT_stage_fac <- fac2(all_data$cT_stage_fac)
+  all_data$cN_stage_fac <- all_data$clin_n_stage
+  all_data$cN_stage_fac[is.na(all_data$cN_stage_fac)]<- "unknown"
+  all_data$cN_stage_fac <- fac2(all_data$cN_stage_fac)
+  all_data$Tumour_Volume_fac <- all_data$original_shape_VoxelVolume/1000
+  all_data$Tumour_Volume_fac <- cut(all_data$Tumour_Volume_fac, breaks=c(0, 5, 25, 75, 125, 150))
+  all_data$Treatment_Modality_fac <- factor(c(
+    "CRS", "CR", "S"
+  )[factor(all_data$treatment_modality)])
+  
+  
+  #image characteristics
+  all_data$acq_Scanner_Manufacturer_fac <- fac2(all_data$acq_scanner_manufacturer)
+  all_data$acq_kernel[all_data$kernel%in%c("2", "3", "b", "c")]<- "other"
+  all_data$acq_Kernel_fac <- fac2(all_data$acq_kernel)
+  all_data$acq_XR_Current_fac <- as.character(cut(as.numeric(all_data$acq_xr_current),
+                                                  breaks=c(0, 200, 500, 1000), dig.lab = 5))
+  all_data$acq_XR_Current_fac[is.na(all_data$acq_XR_Current_fac)] <- "unknown"
+  all_data$acq_XR_Current_fac <- fac2(all_data$acq_XR_Current_fac)
+  all_data$acq_kVp_fac <- fac2(as.numeric(all_data$acq_kvp))
+  all_data$acq_Exposure_Time_fac <- as.numeric(all_data$acq_exposure_time)
+  all_data$acq_Exposure_Time_fac <- as.character(cut(all_data$acq_Exposure_Time_fac,
+                                                     breaks=c(0, 400, 800, 1200), dig.lab = 5))
+  all_data$acq_Exposure_Time_fac[is.na(all_data$acq_Exposure_Time_fac)]<- "unknown"
+  all_data$acq_Exposure_Time_fac <- fac2(all_data$acq_Exposure_Time_fac)
+  all_data$acq_Exposure_fac <- as.character(cut(as.numeric(all_data$acq_exposure),
+                                                breaks=c(0, 100, 200, 300, Inf), dig.lab = 5))
+  all_data$acq_Exposure_fac[is.na(all_data$acq_Exposure_fac)] <- "unknown"
+  all_data$acq_Exposure_fac <- fac2(all_data$acq_Exposure_fac)
+  all_data$acq_Voxel_Width_fac <- as.character(cut(as.numeric(all_data$acq_voxel_dim),
+                                                   breaks=c(0.5, 0.7, 0.9, 1), dig.lab = 5))
+  all_data$acq_Voxel_Width_fac[is.na(all_data$acq_Voxel_Width_fac)] <- "unknown"
+  all_data$acq_Voxel_Width_fac <- factor(all_data$acq_Voxel_Width_fac)
+  
+  extract_summaries <- function(all_data, table_type="participant"){
+    
+    summary_vars <- grep("_fac$", colnames(all_data), value=T)
+    if(table_type=="acq"){
+      summary_vars <- summary_vars[grepl("^acq_", summary_vars)]
+    }else{
+      all_data <- all_data[!duplicated(all_data$patient_id),]
+      summary_vars <- summary_vars[!grepl("^acq_", summary_vars)]
+    }
+    summary_list <- lapply(summary_vars, function(summary_var_i){
+      
+      tbl_i <- table(as.data.frame(all_data[,c( summary_var_i, "partition")]))
+      if("unavailable" %in% rownames(tbl_i)){
+        tbl_i <- tbl_i[c(which(rownames(tbl_i)!="unavailable"),
+                         which(rownames(tbl_i)=="unavailable")),]
+      }
+      test_i <- suppressWarnings(chisq.test(tbl_i))
+      tbl_i[] <- paste0(tbl_i, " (", 100*round(t(t(tbl_i)/colSums(tbl_i)), 2), ")")
+      tbl_i <- cbind(rownames(tbl_i), tbl_i)
+      mat_i <- matrix("", nrow(tbl_i)+1, 5)
+      mat_i[-1,2:4]<- tbl_i
+      mat_i[1]<- gsub("_fac", "", summary_var_i)
+      mat_i[nrow(mat_i),5]<- round(test_i$p.value, 5)
+      return(mat_i)
+    })
+    summary_list <- do.call(rbind, summary_list)
+    colnames(summary_list)<- c("Variable", "Value", "Train", "Validation", "P-value")
+    return(summary_list)
+    
+  }
+  participant_summaries <- extract_summaries(all_data)
+  
+  write.csv(participant_summaries,
+            "tables/participant_summaries.csv",
+            row.names = F)
+  
+  
+  image_parameter_summaries <- extract_summaries(all_data, table_type="acq")
+  write.csv(image_parameter_summaries,
+            "tables/image_parameter_summaries.csv",
+            row.names = F)
+  
+  
+  
+}
+
+#gene modelling
+if(T){
+  
+  selected_genes <- preselected_gene_df$gene_name
+  cor_train <- cor(df_train[,selected_genes],
+                   df_train[,rad_vars],
+                   method="spearman")
+  
+  selected_rad_gene_idx <- cbind(seq_along(selected_genes),
+                                 apply(abs(cor_train), 1, which.max)
+  )
+  selected_rad_gene_df <- data.frame(
+    gene_var=selected_genes,
+    rad_var=rad_vars[selected_rad_gene_idx[,2]],
+    cor_train=cor_train[selected_rad_gene_idx]
+  )
+  selected_rad_gene_df <- selected_rad_gene_df[order(abs(selected_rad_gene_df$cor_train),
+                                                     decreasing=T)[1:3],]
+  
+  cor_text_func <- function(gene_var, rad_var, df_i){
+    
+    x <- df_i[,rad_var]
+    y <- df_i[,gene_var]
+    n <- length(x)
+    bs_cors <- sapply(1:500, function(bs_i){
+      bs_idx <- sample(n, replace=T)
+      cor(x[bs_idx], y[bs_idx], method="spearman")
+    })
+    estimate <- round(mean(bs_cors), 2)
+    ci <- round(unname(quantile(bs_cors, probs=c(0.25, 0.75))),2)
+    res_text <- paste0(estimate, " [", ci[1], ", ", ci[2], "]")
+    
+    return(res_text)
+    
+  }
+  selected_rad_gene_df$cor_train_text <- sapply(1:nrow(selected_rad_gene_df), function(i){
+    gene_var_i <- selected_rad_gene_df$gene_var[i]
+    rad_var_i <- selected_rad_gene_df$rad_var[i]
+    cor_text_func(gene_var_i, rad_var_i, df_train)
+  })
+  selected_rad_gene_df$cor_test_text <- sapply(1:nrow(selected_rad_gene_df), function(i){
+    gene_var_i <- selected_rad_gene_df$gene_var[i]
+    rad_var_i <- selected_rad_gene_df$rad_var[i]
+    cor_text_func(gene_var_i, rad_var_i, df_test)
+  })
+  selected_rad_gene_df$p_value <- sapply(1:nrow(selected_rad_gene_df), function(i){
+    gene_var_i <- selected_rad_gene_df$gene_var[i]
+    rad_var_i <- selected_rad_gene_df$rad_var[i]
+    alternative <- ifelse(selected_rad_gene_df$cor_train[i]>0, "greater", "less")
+    p_value <- cor.test(df_test[,gene_var_i], df_test[,rad_var_i],
+                        method="spearman",
+                        alternative=alternative,
+                        exact=F)$p.value
+    return(p_value)
+  })
+  selected_rad_gene_df$p_value <- p.adjust(selected_rad_gene_df$p_value,
+                                           method="holm")
+  
+  
+  selected_rad_gene_df2 <- selected_rad_gene_df
+  selected_rad_gene_df2 <- selected_rad_gene_df2[,-3]
+  selected_rad_gene_df2$p_value <- round(selected_rad_gene_df2$p_value, 4)
+  selected_rad_gene_df2$rad_var <- gsub("original_", "", selected_rad_gene_df2$rad_var)
+  colnames(selected_rad_gene_df2)<- c("Gene", "Radiomic Feature", "Rho Train", "Rho Test", "P-value")
+  write.csv(selected_rad_gene_df2, 
+            file = "tables/selected_rad_gene_df.csv")
+  
+  
+  #assess for volume confounding
+  confounding_list <- lapply(1:nrow(selected_rad_gene_df), function(i){
+    gene_var_i <- selected_rad_gene_df$gene_var[i]
+    rad_var_i <- selected_rad_gene_df$rad_var[i]
+    selected_vars <- unique(c(gene_var_i, "age", "clin_t_stage", "original_shape_VoxelVolume", rad_var_i))
+    
+    df_i <- df_traintest[,selected_vars]
+    
+    bs_pcors <- t(sapply(1:500, function(bs_i){
+      bs_idx <- sample(nrow(df_i),replace=T)
+      df_bs_i <- df_i[bs_idx,]
+      precision_bs_i <- -cov2cor(solve(cor(df_bs_i, method="spearman")))
+      precision_bs_i[1,-1]
+    }))
+    estimate <- round(colMeans(bs_pcors), 2)
+    ci_lo <- round(apply(bs_pcors, 2, function(x_i) quantile(x_i, probs=0.025)), 2)
+    ci_hi <- round(apply(bs_pcors, 2, function(x_i) quantile(x_i, probs=0.975)), 2)
+    bs_pcors <- paste0(estimate, " [", ci_lo, ", ", ci_hi, "]")
+    out_i <- data.frame(
+      gene_var=gene_var_i,
+      var=names(estimate),
+      value=bs_pcors
+    ) 
+    return(out_i)
+  })
+  confounding_df <- do.call(rbind.data.frame, confounding_list)
+  colnames(confounding_df)<- c("Gene", "Predictor", "PCor")
+  write.csv(confounding_df, 
+            file = "tables/confounding_df.csv")
+  
+  
+  #cor train table
+  bs_cors <- lapply(1:500, function(bs_i){
+    
+    bs_idx <- sample(nrow(df_train), replace = T)
+    melt(cor(df_train[bs_idx,selected_genes],
+        df_train[bs_idx,rad_vars],
+        method="spearman"))
+    
+  })
+  bs_cors <- do.call(rbind, bs_cors)
+  bs_cors <- aggregate(bs_cors[,3], by=bs_cors[,1:2], FUN=function(x){
+    
+    mu <- round(mean(x),2)
+    lo <- round(quantile(x, probs=0.025),2)
+    hi <- round(quantile(x, probs=0.975),2)
+    out <- paste0(mu, " [", lo, ", ", hi, "]")
+    return(out)
+  })
+  bs_cors <- bs_cors[as.numeric(gsub(" .*", "", bs_cors$x))>0.10,]
+  
+  colnames(bs_cors)<- c("Gene", "Radiomic Feature", "Spearman Correlation")
+  write.table(bs_cors, 
+            file = "tables/training_cors.tsv",
+            row.names = F)
+  
+}
+
+#plotting
+if(T){
+  
+  vis_df <- as.data.frame(df_traintest[,c("patient_id",
+                                          selected_rad_gene_df$gene_var,
+                                          selected_rad_gene_df$rad_var,
+                                          "age",
+                                          "female",
+                                          "path_t_stage"
+  )])
+  order(vis_df$SIRT2/vis_df$original_firstorder_Energy)
+  
+  order((vis_df$SIRT2+1)/vis_df$original_firstorder_Energy)
+  #vis_df[c(20,53,5,40),]
+  #vis_df[c(16,40,67,70),]
+  vis_df[c(20,53,43,5),
+         c("age","female","path_t_stage")]
+  
+  
+  write.csv(vis_df, 
+            file = "tables/vis_df.csv")
+  
+  
+  
+  
+  selected_rad_gene_df <- rbind(selected_rad_gene_df)
+  df_train$partition <- "Train"
+  df_test$partition <- "Test"
+  df_traintest <- rbind(df_train, df_test)
+  plot_colours <- c( "forestgreen","darkorchid3", "deepskyblue4")
+  scatter_plots <- lapply(1:nrow(selected_rad_gene_df), function(i){
+    
+    gene_var_i <- selected_rad_gene_df$gene_var[i]
+    rad_var_i <- selected_rad_gene_df$rad_var[i]
+    df_i <- df_traintest[,c(gene_var_i,rad_var_i, "partition")]
+    rad_var_i <- gsub("original_","", rad_var_i)
+    colnames(df_i)[1:2]<- c("Gene", "Radiomic_Feature")
+    
+    plot_i <- ggplot(df_i, aes(x=Radiomic_Feature, y=Gene))+
+      geom_point(colour=plot_colours[i])+
+      xlab(rad_var_i)+
+      ylab(gene_var_i)
+    return(plot_i)
+    
+  })
+  scatter_plots <- ggarrange(plotlist=scatter_plots, nrow=2, ncol=2)
+  ggsave(scatter_plots,
+         filename = "figures/scatter_plots.png",
+         width=8,
+         height=7,
+         dpi=600,
+         units = "in")
+  
+  
+  gene_nonzero_exp <- data.frame(
+    Gene=colnames(alias_genomic_df_plotting),
+    Detected_Expression=colMeans(alias_genomic_df_plotting>0)
+  )
+  gene_plot_1 <- ggplot(gene_nonzero_exp, aes(x=Gene, y=Detected_Expression, fill=Gene))+
+    geom_bar(stat="identity", width=0.5, colour="black")+
+    coord_flip()+
+    scale_y_continuous(labels = scales::percent)+
+    ylab("Proportion of Samples with Expression Detected")+
+    geom_hline(linetype=2, yintercept=0.5, size=0.6)+
+    scale_fill_manual(values=wes_palette("GrandBudapest2",
+                                       n=11, "continuous"))+
+    #theme_minimal()+
+    theme(legend.position = "None")
+  
+  
+  gene_plot_2 <- ggplot(gene_nonzero_exp, aes(x=Gene,
+                                              y=Mean_Expression_mean,
+                                              ymin=Mean_Expression_lo,
+                                              ymax=Mean_Expression_hi
+                                              ))+
+    geom_errorbar(width=0.7)+
+    geom_point(aes(colour=Gene, size=2))+
+    coord_flip()+
+    scale_y_continuous(trans='log10', labels = comma)+
+    
+    xlab(element_blank())+
+    ylab("Transcripts Per Million")+
+    scale_colour_manual(values=wes_palette("GrandBudapest2",
+                                         n=11, "continuous"))+
+    theme(legend.position = "None")
+  
+  
+  alias_genomic_df_plotting2 <- melt(alias_genomic_df_plotting)
+  gene_plot_2 <- ggplot(alias_genomic_df_plotting2, aes(x=variable,
+                                                        y=value))+
+    geom_boxplot(width=0.7)+
+    coord_flip()+
+    scale_y_continuous(trans = 'log10',
+                          breaks = trans_breaks('log10', function(x) 10^x),
+                          labels = trans_format('log10', math_format(10^.x)))+
+    xlab(element_blank())+
+    ylab("Transcripts Per Million")+
+    scale_colour_manual(values=wes_palette("GrandBudapest2",
+                                           n=11, "continuous"))+
+    theme(legend.position = "None")
+  
+
+  heatmap_df <- cor(df_train[,rad_vars],
+                    df_train[,selected_genes],
+                    method="spearman")
+  heatmap_df <- melt(heatmap_df)
+  colnames(heatmap_df)[3]<- "Correlation"
+  heatmap_df$Var1 <- gsub("original_", "", heatmap_df$Var1)
+  gene_plot_3 <- ggplot(heatmap_df, aes_string(y="Var1", x="Var2", fill="Correlation"))+
+    geom_tile()+
+    xlab("Gene")+
+    ylab("Radiomic Feature")+
+    #scale_fill_gradient2(low="deepskyblue", high = "chartreuse2")
+    scale_fill_gradient2(low="midnightblue", high = "seagreen")+
+    scale_y_discrete(limits = rev(levels(factor(heatmap_df$Var1))))
+  
+  
+  gene_plot_12 <- ggarrange(plotlist = list(gene_plot_1, gene_plot_2))
+  triple_gene_plot <- ggarrange(plotlist = list(gene_plot_12,gene_plot_3),nrow=2, heights = c(1,1.5))
+  ggsave(triple_gene_plot,
+         filename='figures/triple_gene_plot.png',
+         dpi=600,
+         units='in',
+         width = 10,
+         height = 10)
+
+}
