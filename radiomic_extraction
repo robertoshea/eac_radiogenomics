@@ -66,7 +66,7 @@ def extract_acq_params(img_subdir=None, dcm_s1_file=None):
 # </editor-fold>
 
 # <editor-fold desc="extract acq params">
-img_dir = 'H:\ALIAS_img'
+img_dir = '\ALIAS_img'
 img_files = rec_listdir(img_dir)
 img_subdirs = [os.path.dirname(i) for i in img_files]
 img_ids = [i.split(sep="\\")[3] for i in img_files]
@@ -158,7 +158,7 @@ def extract_acq_params(dcm_s1_file):
 # </editor-fold>
 
 # <editor-fold desc="File management">
-img_dir = 'H:\ALIAS_img'
+img_dir = '\ALIAS_img'
 img_files = rec_listdir(img_dir)
 img_subdirs = [os.path.dirname(i) for i in img_files]
 img_ids = [i.split(sep="\\")[3] for i in img_files]
@@ -167,7 +167,7 @@ img_df.rename(columns={0: 'patient_id', 1: 'scan'}, inplace=True)
 img_df['img_file'] = img_files
 img_df['img_subdir'] = img_subdirs
 
-seg_dir = 'H:\ALIAS_seg'
+seg_dir = '\ALIAS_seg'
 seg_files = rec_listdir(seg_dir)
 seg_files = [i for i in seg_files if i[-4:] == '.dcm']
 seg_files = [i for i in seg_files if os.path.basename(i)[:2] != '._']
@@ -249,7 +249,7 @@ def extract_windows(img_arr, seg_arr, class_ratio, n_sample):
 random.seed(0)
 np.random.seed(0)
 
-output_dir = r'C:\Users\ro20\Documents\Datasets\ALIAS\NPY'
+output_dir = r'#'
 
 img_windows_output_dir = output_dir + r'\img_windows_' + str(window_size)
 if not os.path.exists(img_windows_output_dir):
@@ -388,7 +388,7 @@ extractor = featureextractor.RadiomicsFeatureExtractor(resampledPixelSpacing=(0,
 extractor.enableImageTypeByName('Wavelet')
 logger = radiomics.logging.getLogger("radiomics")
 logger.setLevel(radiomics.logging.ERROR)
-radiomics_output_dir = r'C:\Users\ro20\Documents\Datasets\Radiomic_Features\radiomic_features_alias_SW_06_03_23'
+radiomics_output_dir = r'#'
 make_newdir(radiomics_output_dir)
 
 def get_value(x):
@@ -534,11 +534,11 @@ def extract_radiomic_features(img_dir,
 # </editor-fold>
 
 # <editor-fold desc="radiomic extraction">
-main_dir = r'C:\Users\ro20\Documents\Datasets\ALIAS'
+main_dir = r'#'
 img_dir = main_dir + r'\NPY\img'
 seg_gtv_output_dir = main_dir + r'\NPY\seg_gtv'
 dataset_name = 'ALIAS'
-img_dcm_dir = r'H:\ALIAS_img'
+img_dcm_dir = r'\ALIAS_img'
 
 extract_radiomic_features(img_dir=img_dir,
                           img_dcm_dir=img_dcm_dir,
@@ -549,7 +549,7 @@ extract_radiomic_features(img_dir=img_dir,
 # </editor-fold>
 
 # <editor-fold desc="check truncation">
-main_dir = r'C:\Users\ro20\Documents\Datasets\ALIAS'
+main_dir = r'#'
 img_dir = main_dir + r'\NPY\img'
 seg_gtv_output_dir = main_dir + r'\NPY\seg_gtv'
 dataset_name = 'ALIAS'
