@@ -99,7 +99,7 @@ if(T){
   if(T){
     
     #read in clinical data
-    metadata_dir <- "C:/Users/ro20/Documents/Datasets/ALIAS/Metadata"
+    metadata_dir <- "~/Metadata"
     metadata_file <- file.path(metadata_dir,
                                "query_standard_cohort_2023-02-22.tsv.txt")
     metadata <- read.delim(metadata_file, stringsAsFactors = F)
@@ -339,7 +339,7 @@ if(T){
   
   #import ct image acquisition parameters
   if(T){
-    acq_params_file <- 'C:/Users/ro20/Documents/PycharmProjects/ALIAS 11_10_21/acq_params/alias.csv'
+    acq_params_file <- '~/Documents/PycharmProjects/ALIAS 11_10_21/acq_params/alias.csv'
     acq_params_df <- read.csv(acq_params_file)[,-1]
     acq_params_df <- acq_params_df[,!colnames(acq_params_df)=="slice_thickness"]
     acq_params_df$acq_study_date <- paste0(
@@ -351,7 +351,7 @@ if(T){
              7,8)
     )
     acq_params_df$acq_study_date <- as.Date(acq_params_df$acq_study_date, format="%Y-%m-%d")
-    truncation_df <- read.csv('C:/Users/ro20/Documents/PycharmProjects/ALIAS 11_10_21/tables/alias_truncation.csv')[,-1]
+    truncation_df <- read.csv('~/Documents/PycharmProjects/ALIAS 11_10_21/tables/alias_truncation.csv')[,-1]
     acq_params_df <- merge.data.frame(acq_params_df, truncation_df, all.x = T, all.y = T)
     acq_params_df$truncation[is.na(acq_params_df$truncation)] <- F
     acq_params_df$dataset <- "ALIAS"
@@ -366,7 +366,7 @@ if(T){
   #import radiomic data
   if(T){
     
-    radiomic_df <- read.csv("C:/Users/ro20/Documents/Datasets/Radiomic_Features/radiomic_features_alias_SW_06_03_23/ALIAS_os.csv")[,-1]
+    radiomic_df <- read.csv("~/Documents/Datasets/Radiomic_Features/radiomic_features_alias_SW_06_03_23/ALIAS_os.csv")[,-1]
     radiomic_df <- radiomic_df[radiomic_df$patient_id!="NT331",]
     radiomic_df <- radiomic_df[radiomic_df$scan=="SCAN2",]
     radiomic_df <- radiomic_df[radiomic_df$patient_id %in% radioclinical_df$patient_id,]
@@ -463,7 +463,7 @@ if(T){
 
 #alias genomic file
 if(T){
-  alias_genomics_dir <- "C:/Users/ro20/Documents/Datasets/ALIAS/Genomics"
+  alias_genomics_dir <- "~/Genomics"
   alias_genomic_file <- file.path(alias_genomics_dir, "selected_tpm_22_05_23.tsv")
 }
 
