@@ -1,4 +1,4 @@
-#alias radiogenomics 05_07_23
+#alias radiogenomics 27_06_23
 
 #set seed
 if(T){
@@ -12,7 +12,6 @@ if(T){
   library(ggpubr)
   library(org.Hs.eg.db)
   library(MASS)
-  library(scales)
 }
 
 #utility functions
@@ -99,7 +98,7 @@ if(T){
   if(T){
     
     #read in clinical data
-    metadata_dir <- "~/Metadata"
+    metadata_dir <- "~Datasets/ALIAS/Metadata"
     metadata_file <- file.path(metadata_dir,
                                "query_standard_cohort_2023-02-22.tsv.txt")
     metadata <- read.delim(metadata_file, stringsAsFactors = F)
@@ -157,9 +156,36 @@ if(T){
     #clinical M stage
     clin_m_stage <- metadata$PS_MStage_PrimaryTumour_FinalPretreatmentStaging
     clin_m_stage <- suppressWarnings(as.numeric(substr(clin_m_stage, 2,2)))
-
-    #management
+    
+    #treatment pathways
+    treatment_modalities_file <-  file.path(metadata_dir,
+                                            "treatment_pathways3.txt")
+    treatment_modalities_df <-read.delim(treatment_modalities_file)
+    colnames(metadata)[colnames(metadata)=="TP_CurativeTreatmentModality"] <- "TP_CurativeTreatmentModality_prev"
+    
+    metadata$TP_CurativeTreatmentModality <- treatment_modalities_df$TP.Curative.Modality.Updated.Corrected.19.Feb.24[
+      match(metadata$sha_id, treatment_modalities_df$Sha.Id)
+    ]
+    metadata$TP_CurativeTreatmentModality[metadata$TP_CurativeTreatmentModality%in%
+                                            c("chemo-radiotherapy and surgery",
+                                              "Chemoradiotherapy and surgery")] <- "Chemoradiotherapy, Surgery"
+    metadata$TP_CurativeTreatmentModality[metadata$TP_CurativeTreatmentModality%in%
+                                            c("Chemotherpay and surgery",
+                                              "Chemotherapy and surgery"
+                                            )] <- "Chemotherapy, Surgery"
+    
+    metadata$TP_CurativeTreatmentModality[ metadata$TP_CurativeTreatmentModality=="Surgery and adjuvant RT"] <- "Surgery, adjuvant Radiotherapy"
+    metadata$TP_CurativeTreatmentModality[metadata$TP_CurativeTreatmentModality %in%
+                                            c("Chemotherapy and surgery and adjuvant RT",
+                                              "Chemotherapy and surgery & adjuvant RT",
+                                              "Chemotherapy and surgery + adjuvant RT")] <- "Chemotherapy, Surgery, adjuvant Radiotherapy"
+    metadata$TP_CurativeTreatmentModality[metadata$TP_CurativeTreatmentModality %in%
+                                            c("Definitive CRT")] <- "Definitive Chemoradiotherapy"
+    metadata$TP_CurativeTreatmentModality[metadata$TP_CurativeTreatmentModality %in%
+                                            c("Chemotherapy only no surgery")] <- "Chemotherapy only"
+    
     metadata$TP_PalliativeAntiCancerTreatmentModality[metadata$TP_PalliativeAntiCancerTreatmentModality=="unknown"] <- ""
+    metadata$TP_CurativeTreatmentModality[metadata$TP_PalliativeAntiCancerTreatmentModality=="palliative oncological treatment"]<- ""
     treatment_modality <- paste0(
       metadata$TP_CurativeTreatmentModality,
       metadata$TP_PalliativeAntiCancerTreatmentModality
@@ -203,7 +229,7 @@ if(T){
                                                      "Nil",
                                                      "Nil (no option to exclude)",
                                                      "nill"
-    )] <- "none"
+    )] <- "other"
     chemotherapy_protocol[chemotherapy_protocol%in%c("CarboX",
                                                      "Carboplatin "
     )] <- "carboplatin"
@@ -298,6 +324,39 @@ if(T){
     #mandard
     mandard_response <- as.numeric(substr(metadata$RP_MandardScoreForResponse, 4,4))
     
+    #tumour location
+    tumour_location <- metadata$RD_OesophagusSite
+    tumour_location[tumour_location=="lower third"]<- "Oesophagus Lower"
+    tumour_location[tumour_location=="middle third"]<- "Oesophagus Middle"
+    tumour_location[tumour_location=="upper third"]<- "Oesophagus Upper"
+    siewert <-  metadata$RD_SiewertClassification
+    siewert[siewert=="unknown"] <- ""
+    siewert <- paste0("Siewert ", siewert)
+    tumour_location[tumour_location==""]<- siewert[tumour_location==""]
+    tumour_location[tumour_location=="Siewert "]<- "Unknown"
+    combined_tumour_site <- metadata$RD_CombinedTumourSite
+    combined_tumour_site[combined_tumour_site=="GOJ_Siewert:unknown"] <- ""
+    combined_tumour_site[combined_tumour_site==""]<- metadata$RP_PostOpPathCombinedTumourSite[combined_tumour_site==""]
+    combined_tumour_site <- gsub("GOJ_", "", combined_tumour_site)
+    combined_tumour_site <- gsub(":", " ", combined_tumour_site)
+    combined_tumour_site[combined_tumour_site=="Oesophagus lower third"] <- "Oesophagus Lower"
+    combined_tumour_site[combined_tumour_site=="Oesophagus middle third"] <- "Oesophagus Middle"
+    combined_tumour_site[combined_tumour_site=="Oesophagus upper third"] <- "Oesophagus Upper"
+    combined_tumour_site[combined_tumour_site=="Siewert unknown"] <- "Unknown"
+    tumour_location[combined_tumour_site!=""] <- combined_tumour_site[combined_tumour_site!=""]
+    metadata$RD_Stomach[metadata$RD_Stomach==""] <- "Unknown"
+    metadata$RD_Stomach[metadata$RD_Stomach=="cardia"] <- "Siewert 2"
+    metadata$RD_Stomach[metadata$RD_Stomach=="fundus"] <- "Siewert 3"
+    metadata$RD_Stomach[metadata$RD_Stomach=="antrum"] <- "Siewert 3"
+    tumour_location[tumour_location=="Unknown"] <-
+      metadata$RD_Stomach[tumour_location=="Unknown"]
+    ps_siewert <- metadata$PS_SiewertClassification
+    ps_siewert[ps_siewert%in%c("", "unknown")]<- "Unknown"
+    ps_siewert[ps_siewert!="Unknown"] <-
+      paste0("Siewert ",
+             ps_siewert[ps_siewert!="Unknown"])
+    tumour_location[tumour_location=="Unknown"] <- ps_siewert[tumour_location=="Unknown"]
+    
     clinical_data <- data.frame(
       pathology="oesophageal adenocarcinoma",
       patient_id,
@@ -322,7 +381,7 @@ if(T){
       chemotherapy_protocol,
       mandard_response,
       path_response,
-      path_t_stage,
+      tumour_location,
       stringsAsFactors = F
     )
     rownames(clinical_data) <- clinical_data$patient_id
@@ -332,14 +391,18 @@ if(T){
     initial_centre_counts <- table(centre)
     
     radioclinical_df <- clinical_data
-    radioclinical_df$nonchemorad_patients <- clinical_data$treatment_modality %in% c("surgery only", "palliative oncological treatment")
+    radioclinical_df$nonchemorad_patients <- clinical_data$treatment_modality %in% c("Surgery only",
+                                                                                     "Surgery, adjuvant Radiotherapy",
+                                                                                     "palliative oncological treatment")
     n_nonchemorad_patients <- sum(radioclinical_df$nonchemorad_patients)
+    
     radioclinical_df <- radioclinical_df[!radioclinical_df$nonchemorad_patients,]
+    
   }
   
   #import ct image acquisition parameters
   if(T){
-    acq_params_file <- '~/Documents/PycharmProjects/ALIAS 11_10_21/acq_params/alias.csv'
+    acq_params_file <- '~PycharmProjects/ALIAS 11_10_21/acq_params/alias.csv'
     acq_params_df <- read.csv(acq_params_file)[,-1]
     acq_params_df <- acq_params_df[,!colnames(acq_params_df)=="slice_thickness"]
     acq_params_df$acq_study_date <- paste0(
@@ -351,12 +414,15 @@ if(T){
              7,8)
     )
     acq_params_df$acq_study_date <- as.Date(acq_params_df$acq_study_date, format="%Y-%m-%d")
-    truncation_df <- read.csv('~/Documents/PycharmProjects/ALIAS 11_10_21/tables/alias_truncation.csv')[,-1]
+    truncation_df <- read.csv('~PycharmProjects/ALIAS 11_10_21/tables/alias_truncation.csv')[,-1]
     acq_params_df <- merge.data.frame(acq_params_df, truncation_df, all.x = T, all.y = T)
     acq_params_df$truncation[is.na(acq_params_df$truncation)] <- F
     acq_params_df$dataset <- "ALIAS"
     acq_params_df <- acq_params_df[acq_params_df$scan=="SCAN2",]
     acq_params_df <- acq_params_df[acq_params_df$patient_id %in% radioclinical_df$patient_id,]
+    
+
+    
     patients_without_scan2 <- setdiff(radioclinical_df$patient_id, acq_params_df$patient_id)
     n_patients_without_scan2 <- length(patients_without_scan2)
     radioclinical_df <- merge.data.frame(radioclinical_df, acq_params_df, by='patient_id', all.x = F, all.y = T)
@@ -366,8 +432,8 @@ if(T){
   #import radiomic data
   if(T){
     
-    radiomic_df <- read.csv("~/Documents/Datasets/Radiomic_Features/radiomic_features_alias_SW_06_03_23/ALIAS_os.csv")[,-1]
-    radiomic_df <- radiomic_df[radiomic_df$patient_id!="NT331",]
+    radiomic_df <- read.csv("~Datasets/Radiomic_Features/radiomic_features_alias_SW_06_03_23/ALIAS_os.csv")[,-1]
+    radiomic_df <- radiomic_df[radiomic_df$patient_id!="#",]
     radiomic_df <- radiomic_df[radiomic_df$scan=="SCAN2",]
     radiomic_df <- radiomic_df[radiomic_df$patient_id %in% radioclinical_df$patient_id,]
     radioclinical_df <- merge.data.frame(radioclinical_df, radiomic_df)
@@ -449,13 +515,14 @@ if(T){
   rad_vars <- all_rad_vars[scanner_stability$`P-value`>0.1&
                              centre_stability$`P-value`>0.1
   ]
-  stability_df2 <- stability_df[stability_df$`Radiomic Feature` %in% rad_vars,]
-  stability_df2$res <- paste0("F=", round(stability_df2$`F-score`, 2), ", P=", round(stability_df2$`P-value`, 2))
-  stability_df2$Variable[stability_df2$Variable=="acq_scanner_manufacturer"]<- "scanner vendor"
-  stability_df2 <- cbind(stability_df2[stability_df2$Variable=="scanner vendor",c(2,5)],
-                         stability_df2[stability_df2$Variable!="scanner vendor",5])
-  colnames(stability_df2)[-1] <- c("Variability by Scanner Vendor", "Variability by Institution")
-  stability_df2[,1]<- gsub("original_", "", stability_df2[,1])
+  stability_df2 <- stability_df
+  stability_df2$`Radiomic Feature` <- gsub("original_", "", stability_df2$`Radiomic Feature`)
+  stability_df2$`Variable` <- gsub("acq_", "",  stability_df2$`Variable`)
+  stability_df2 <- stability_df2[order(stability_df2$Variable),]
+  stability_df2$Variable <- gsub("centre", "institution", stability_df2$Variable)
+  stability_df2$`F-score` <- round(stability_df2$`F-score`, 3)
+  stability_df2$`P-value` <- round(stability_df2$`P-value`, 3)
+  
   write.csv(stability_df2,
             "tables/stability_df.csv")
   
@@ -463,7 +530,7 @@ if(T){
 
 #alias genomic file
 if(T){
-  alias_genomics_dir <- "~/Genomics"
+  alias_genomics_dir <- "~Datasets/ALIAS/Genomics"
   alias_genomic_file <- file.path(alias_genomics_dir, "selected_tpm_22_05_23.tsv")
 }
 
@@ -531,8 +598,6 @@ if(T){
   
   nonzero_proportions <- colMeans(alias_genomic_df[,preselected_gene_df$gene_name]==0)
   high_nonzero_genes <- which(nonzero_proportions>0.5)
-  alias_genomic_df_plotting <- alias_genomic_df[preselected_gene_df$gene_name]
-  
   preselected_gene_df <- preselected_gene_df[nonzero_proportions < 0.5,]
   alias_genomic_df <- alias_genomic_df[,!colnames(alias_genomic_df) %in% high_nonzero_genes]
   
@@ -564,7 +629,6 @@ if(T){
 
 #power simulation
 if(T){
-  
   n <- nrow(df_test)
   sigma_xy <- matrix(c(1,0.5,0.5,1), 2)
   sim_p <- sapply(1:1000, function(rep_i){
@@ -607,10 +671,11 @@ if(T){
   all_data$cN_stage_fac <- fac2(all_data$cN_stage_fac)
   all_data$Tumour_Volume_fac <- all_data$original_shape_VoxelVolume/1000
   all_data$Tumour_Volume_fac <- cut(all_data$Tumour_Volume_fac, breaks=c(0, 5, 25, 75, 125, 150))
-  all_data$Treatment_Modality_fac <- factor(c(
-    "CRS", "CR", "S"
-  )[factor(all_data$treatment_modality)])
-  
+  all_data$Treatment_Modality_fac <- factor(all_data$treatment_modality)
+  all_data$Tumour_Location_fac <-  fac2(all_data$tumour_location,
+                                        levels = c("Oesophagus Middle", "Oesophagus Lower","Siewert 1",
+                                                   "Siewert 2", "Siewert 3"
+                                        ))
   
   #image characteristics
   all_data$acq_Scanner_Manufacturer_fac <- fac2(all_data$acq_scanner_manufacturer)
@@ -745,6 +810,7 @@ if(T){
   selected_rad_gene_df2$p_value <- round(selected_rad_gene_df2$p_value, 4)
   selected_rad_gene_df2$rad_var <- gsub("original_", "", selected_rad_gene_df2$rad_var)
   colnames(selected_rad_gene_df2)<- c("Gene", "Radiomic Feature", "Rho Train", "Rho Test", "P-value")
+  #selected_rad_gene_df2$`P-value`<- format_p(selected_rad_gene_df2$`P-value`)
   write.csv(selected_rad_gene_df2, 
             file = "tables/selected_rad_gene_df.csv")
   
@@ -780,57 +846,11 @@ if(T){
             file = "tables/confounding_df.csv")
   
   
-  #cor train table
-  bs_cors <- lapply(1:500, function(bs_i){
-    
-    bs_idx <- sample(nrow(df_train), replace = T)
-    melt(cor(df_train[bs_idx,selected_genes],
-        df_train[bs_idx,rad_vars],
-        method="spearman"))
-    
-  })
-  bs_cors <- do.call(rbind, bs_cors)
-  bs_cors <- aggregate(bs_cors[,3], by=bs_cors[,1:2], FUN=function(x){
-    
-    mu <- round(mean(x),2)
-    lo <- round(quantile(x, probs=0.025),2)
-    hi <- round(quantile(x, probs=0.975),2)
-    out <- paste0(mu, " [", lo, ", ", hi, "]")
-    return(out)
-  })
-  bs_cors <- bs_cors[as.numeric(gsub(" .*", "", bs_cors$x))>0.10,]
-  
-  colnames(bs_cors)<- c("Gene", "Radiomic Feature", "Spearman Correlation")
-  write.table(bs_cors, 
-            file = "tables/training_cors.tsv",
-            row.names = F)
   
 }
 
 #plotting
 if(T){
-  
-  vis_df <- as.data.frame(df_traintest[,c("patient_id",
-                                          selected_rad_gene_df$gene_var,
-                                          selected_rad_gene_df$rad_var,
-                                          "age",
-                                          "female",
-                                          "path_t_stage"
-  )])
-  order(vis_df$SIRT2/vis_df$original_firstorder_Energy)
-  
-  order((vis_df$SIRT2+1)/vis_df$original_firstorder_Energy)
-  #vis_df[c(20,53,5,40),]
-  #vis_df[c(16,40,67,70),]
-  vis_df[c(20,53,43,5),
-         c("age","female","path_t_stage")]
-  
-  
-  write.csv(vis_df, 
-            file = "tables/vis_df.csv")
-  
-  
-  
   
   selected_rad_gene_df <- rbind(selected_rad_gene_df)
   df_train$partition <- "Train"
@@ -861,6 +881,70 @@ if(T){
          units = "in")
   
   
+  
+  
+  
+  scatter_plots <- lapply(1:3, function(i){
+    
+    gene_var_i <- selected_rad_gene_df$gene_var[i]
+    rad_var_i <- selected_rad_gene_df$rad_var[i]
+    df_i <- df_traintest[,c(gene_var_i,rad_var_i, "partition")]
+    rad_var_i <- gsub("original_","", rad_var_i)
+    colnames(df_i)[1:2]<- c("Gene", "Radiomic_Feature")
+    
+    plot_i <- ggplot(df_i, aes(x=Radiomic_Feature, y=Gene))+
+      geom_point(colour=plot_colours[i])+
+      facet_grid(partition~.)+
+      xlab(rad_var_i)+
+      ylab(gene_var_i)
+    return(plot_i)
+    
+  })
+  scatter_plots <- ggarrange(plotlist=scatter_plots, nrow=1, ncol=3)
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  #
+  scatter_plots <- lapply(1:3, function(i){
+    
+    gene_var_i <- selected_rad_gene_df$gene_var[i]
+    rad_var_i <- selected_rad_gene_df$rad_var[i]
+    df_i <- df_traintest[,c(gene_var_i,rad_var_i, "partition")]
+    rad_var_i <- gsub("original_","", rad_var_i)
+    colnames(df_i)[1:2]<- c("Gene", "Radiomic_Feature")
+    
+    plot_i <- ggplot(df_i, aes(x=Radiomic_Feature, y=Gene))+
+      geom_point(colour=plot_colours[i])+
+      geom_smooth(method="lm",
+                  formula=  Gene ~ splines::bs(Radiomic_Feature, knots = c(25, 40, 60), degree = 3))+
+      xlab(rad_var_i)+
+      ylab(gene_var_i)
+    return(plot_i)
+    
+  })
+  scatter_plots <- ggarrange(plotlist=scatter_plots, nrow=2, ncol=2)
+  
+  
+  
+  
+  cor.test(df_traintest$original_firstorder_Energy/df_traintest$original_shape_VoxelVolume,
+           (df_traintest$mandard_response)*1, method="spearman",
+           alternative = 'greater')
+  
+  
+}
+
+#plotting 2
+if(T){
+  
   gene_nonzero_exp <- data.frame(
     Gene=colnames(alias_genomic_df_plotting),
     Detected_Expression=colMeans(alias_genomic_df_plotting>0)
@@ -872,7 +956,7 @@ if(T){
     ylab("Proportion of Samples with Expression Detected")+
     geom_hline(linetype=2, yintercept=0.5, size=0.6)+
     scale_fill_manual(values=wes_palette("GrandBudapest2",
-                                       n=11, "continuous"))+
+                                         n=11, "continuous"))+
     #theme_minimal()+
     theme(legend.position = "None")
   
@@ -881,7 +965,7 @@ if(T){
                                               y=Mean_Expression_mean,
                                               ymin=Mean_Expression_lo,
                                               ymax=Mean_Expression_hi
-                                              ))+
+  ))+
     geom_errorbar(width=0.7)+
     geom_point(aes(colour=Gene, size=2))+
     coord_flip()+
@@ -890,7 +974,7 @@ if(T){
     xlab(element_blank())+
     ylab("Transcripts Per Million")+
     scale_colour_manual(values=wes_palette("GrandBudapest2",
-                                         n=11, "continuous"))+
+                                           n=11, "continuous"))+
     theme(legend.position = "None")
   
   
@@ -900,15 +984,15 @@ if(T){
     geom_boxplot(width=0.7)+
     coord_flip()+
     scale_y_continuous(trans = 'log10',
-                          breaks = trans_breaks('log10', function(x) 10^x),
-                          labels = trans_format('log10', math_format(10^.x)))+
+                       breaks = trans_breaks('log10', function(x) 10^x),
+                       labels = trans_format('log10', math_format(10^.x)))+
     xlab(element_blank())+
     ylab("Transcripts Per Million")+
     scale_colour_manual(values=wes_palette("GrandBudapest2",
                                            n=11, "continuous"))+
     theme(legend.position = "None")
   
-
+  
   heatmap_df <- cor(df_train[,rad_vars],
                     df_train[,selected_genes],
                     method="spearman")
@@ -932,5 +1016,10 @@ if(T){
          units='in',
          width = 10,
          height = 10)
-
 }
+
+
+
+
+
+
